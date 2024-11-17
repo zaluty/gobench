@@ -8,5 +8,5 @@ import (
 
 func main() {
 	file := helpers.MustCompile(`^.*\d.txt$`)
-	fmt.Println(file)
+	fmt.Println(file, "test.txt")
 }
