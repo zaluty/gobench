@@ -7,8 +7,11 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
+	"time"
 
 	"github.com/zaluty/gobench/internal/runner"
+	"github.com/zaluty/gobench/internal/ui"
 )
 
 // CLI flags
@@ -23,20 +26,23 @@ type Config struct {
 func main() {
 	config := parseFlags()
 
-	// TODO: Initialize components
-	// - File watcher
-	// - Benchmark runner
-	// - Reporter
-	// - Analyzer
-
 	fmt.Println(" 🚀 GoBench - Modern Go Benchmarking")
 	fmt.Printf("Searching for benchmarks in: %v\n", config.Dirs)
 	if config.Dirs == nil {
-		fmt.Println("No directories specified. Make sure your benchmarks ar in the `benchmarks` directory.")
+		fmt.Println("No directories specified. Make sure your benchmarks are in the `benchmarks` directory.")
 	}
+
 	// Start in watch mode if specified
 	if config.Watch {
 		fmt.Println("  Watching for changes...")
+
+		// Initialize terminal UI
+		termUI, err := ui.NewTerminalUI()
+		if err != nil {
+			log.Fatal(err)
+		}
+		termUI.Start()
+		defer termUI.Stop()
 
 		watcher, err := runner.NewWatcher(config.Dirs)
 		if err != nil {
@@ -50,17 +56,35 @@ func main() {
 
 		// Watch for events and execute files
 		for event := range watcher.Events() {
-			fmt.Printf("\nExecuting file: %s\n", event.Path)
+			fileName := strings.Split(event.Path, "/")[len(strings.Split(event.Path, "/"))-1]
+			termUI.AddBenchmark(fileName)
+			termUI.SetStatus(fileName, ui.StatusRunning)
+
+			startTime := time.Now()
 			cmd := exec.Command("go", "run", event.Path)
 			cmd.Stdout = os.Stdout
 			cmd.Stderr = os.Stderr
+
 			if err := cmd.Run(); err != nil {
-				fmt.Printf("Error executing %s: %v\n", event.Path, err)
+				termUI.Failed(fileName, err)
+				continue
 			}
+
+			duration := time.Since(startTime).Seconds()
+			termUI.UpdateResult(fileName, duration)
+			termUI.Complete(fileName)
+		}
+	} else {
+		// Run benchmarks without watch mode
+		runner, err := runner.NewRunner(config.Dirs, config.Filter, config.Parallel)
+		if err != nil {
+			log.Fatal(err)
+		}
+
+		if err := runner.Run(); err != nil {
+			log.Fatal(err)
 		}
 	}
-
-	// TODO: Discover and run benchmarks
 }
 
 func parseFlags() *Config {

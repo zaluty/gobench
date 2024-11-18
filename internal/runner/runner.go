@@ -7,12 +7,14 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+
+	"github.com/zaluty/gobench/internal/ui"
 )
 
 // BenchmarkResult represents the result of a single benchmark
 type BenchmarkResult struct {
 	Name     string
-	Duration string
+	Duration float64
 	Ops      int64
 	AllocMB  float64
 }
@@ -22,28 +24,42 @@ type Runner struct {
 	dirs     []string
 	filter   string
 	parallel int
+	ui       *ui.TerminalUI
 }
 
 // NewRunner creates a new benchmark runner
-func NewRunner(dirs []string, filter string, parallel int) *Runner {
+func NewRunner(dirs []string, filter string, parallel int) (*Runner, error) {
+	termUI, err := ui.NewTerminalUI()
+	if err != nil {
+		return nil, fmt.Errorf("failed to initialize UI: %w", err)
+	}
+
 	return &Runner{
 		dirs:     dirs,
 		filter:   filter,
 		parallel: parallel,
-	}
+		ui:       termUI,
+	}, nil
 }
 
 // Run executes all discovered benchmarks
-func (r *Runner) Run() ([]BenchmarkResult, error) {
+func (r *Runner) Run() error {
+	r.ui.Start()
+	defer r.ui.Stop()
+
 	benchmarks, err := r.discover()
 	if err != nil {
-		return nil, fmt.Errorf("failed to discover benchmarks: %w", err)
+		return fmt.Errorf("failed to discover benchmarks: %w", err)
 	}
 
-	results := make([]BenchmarkResult, 0, len(benchmarks))
 	var wg sync.WaitGroup
 	resultChan := make(chan BenchmarkResult, len(benchmarks))
 	errorChan := make(chan error, len(benchmarks))
+
+	// Initialize UI with discovered benchmarks
+	for bench := range benchmarks {
+		r.ui.AddBenchmark(bench)
+	}
 
 	// Create worker pool
 	for i := 0; i < r.parallel; i++ {
@@ -51,31 +67,33 @@ func (r *Runner) Run() ([]BenchmarkResult, error) {
 		go func() {
 			defer wg.Done()
 			for bench := range benchmarks {
+				r.ui.SetStatus(bench, ui.StatusRunning)
+
 				result, err := r.runBenchmark(bench)
 				if err != nil {
-					errorChan <- err
+					r.ui.Failed(bench, err)
+					errorChan <- fmt.Errorf("benchmark %s failed: %w", bench, err)
 					continue
 				}
+
+				r.ui.UpdateResult(bench, result.Duration)
+				r.ui.Complete(bench)
 				resultChan <- result
 			}
 		}()
 	}
 
+	// Wait for completion
 	wg.Wait()
 	close(resultChan)
 	close(errorChan)
 
-	// Collect results
-	for result := range resultChan {
-		results = append(results, result)
-	}
-
 	// Check for errors
 	if len(errorChan) > 0 {
-		return results, fmt.Errorf("some benchmarks failed to run")
+		return <-errorChan
 	}
 
-	return results, nil
+	return nil
 }
 
 // discover finds all benchmark functions in the specified directories
@@ -123,7 +141,7 @@ func (r *Runner) runBenchmark(path string) (BenchmarkResult, error) {
 	// For now, return dummy result
 	return BenchmarkResult{
 		Name:     filepath.Base(path),
-		Duration: "1s",
+		Duration: 1.0,
 		Ops:      1000000,
 		AllocMB:  1.5,
 	}, nil
